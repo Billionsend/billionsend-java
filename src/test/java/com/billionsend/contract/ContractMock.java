@@ -94,8 +94,9 @@ public final class ContractMock {
     void run(SseWriter writer) throws Exception;
   }
 
+  /** Answers one request; whatever it records on the hit is recorded before the answer is written. */
   private interface Script {
-    JsonNode answer(HttpExchange exchange, Hit hit) throws Exception;
+    void answer(HttpExchange exchange, Hit hit) throws Exception;
   }
 
   private final Map<String, Deque<Script>> scripts = new HashMap<>();
@@ -165,8 +166,7 @@ public final class ContractMock {
         key,
         (exchange, hit) -> {
           JsonNode json = ContractSpec.MAPPER.valueToTree(body);
-          send(exchange, status, json.toString(), "application/json", headers);
-          return json;
+          send(exchange, hit, json, status, json.toString(), "application/json", headers);
         });
   }
 
@@ -188,8 +188,7 @@ public final class ContractMock {
     push(
         key,
         (exchange, hit) -> {
-          send(exchange, status, body, contentType, Map.of());
-          return null;
+          send(exchange, hit, null, status, body, contentType, Map.of());
         });
   }
 
@@ -199,7 +198,7 @@ public final class ContractMock {
         key,
         (exchange, hit) -> {
           Thread.sleep(millis);
-          return sampleAnswer(exchange, ContractSpec.operation(key));
+          sampleAnswer(exchange, hit, ContractSpec.operation(key));
         });
   }
 
@@ -266,13 +265,20 @@ public final class ContractMock {
             }
             closed.countDown();
           }
-          return null;
         });
     return closed;
   }
 
-  private static void send(HttpExchange exchange, int status, String body, String contentType, Map<String, String> headers)
+  /**
+   * Records {@code answer} on the hit, then writes the response. The order matters: once the last
+   * byte is out, the client may return and the test read the hit before this thread runs again.
+   */
+  private static void send(
+      HttpExchange exchange, Hit hit, JsonNode answer, int status, String body, String contentType, Map<String, String> headers)
       throws IOException {
+    if (hit != null) {
+      hit.response = answer;
+    }
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     exchange.getResponseHeaders().set("content-type", contentType);
     exchange.getResponseHeaders().set("x-request-id", "req_mock");
@@ -283,7 +289,7 @@ public final class ContractMock {
     }
   }
 
-  private JsonNode sampleAnswer(HttpExchange exchange, ContractSpec.Operation op) throws IOException {
+  private void sampleAnswer(HttpExchange exchange, Hit hit, ContractSpec.Operation op) throws IOException {
     if (op.isStream()) {
       exchange.getResponseHeaders().set("content-type", "text/event-stream");
       exchange.getResponseHeaders().set("x-request-id", "req_mock");
@@ -295,21 +301,20 @@ public final class ContractMock {
                     + "\"data\":{\"inbox_id\":\"i\",\"thread_id\":\"t\",\"email_id\":\"e\"}}\n\n")
                 .getBytes(StandardCharsets.UTF_8));
       }
-      return null;
+      return;
     }
     String status = op.successStatus();
     if (status == null) {
       JsonNode error = ContractSpec.MAPPER.valueToTree(error(501, "not_implemented", "No success answer"));
-      send(exchange, 501, error.toString(), "application/json", Map.of());
-      return error;
+      send(exchange, hit, error, 501, error.toString(), "application/json", Map.of());
+      return;
     }
     JsonNode sample = ContractSpec.example(op.responseSchema(status), !minimal);
     List<String> errors = ContractSpec.validate(op.responsePointer(status), sample);
     if (!errors.isEmpty()) {
       violations.add(op.key + ": the generated answer does not validate: " + errors);
     }
-    send(exchange, Integer.parseInt(status), sample.toString(), "application/json", Map.of());
-    return sample;
+    send(exchange, hit, sample, Integer.parseInt(status), sample.toString(), "application/json", Map.of());
   }
 
   private void handle(HttpExchange exchange) throws IOException {
@@ -326,12 +331,16 @@ public final class ContractMock {
       if (op == null) {
         violations.add("no operation for " + method + " " + rawPath);
         JsonNode error = ContractSpec.MAPPER.valueToTree(error(404, "not_found", "No such endpoint"));
-        send(exchange, 404, error.toString(), "application/json", Map.of());
+        send(exchange, hit, error, 404, error.toString(), "application/json", Map.of());
         return;
       }
       check(op, hit);
       Script script = next(op.key);
-      hit.response = script == null ? sampleAnswer(exchange, op) : script.answer(exchange, hit);
+      if (script == null) {
+        sampleAnswer(exchange, hit, op);
+      } else {
+        script.answer(exchange, hit);
+      }
     } catch (DropConnection e) {
       // Leave without an answer: the server closes the connection.
     } catch (IOException e) {
