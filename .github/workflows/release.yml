@@ -1,0 +1,43 @@
+name: release
+
+# Publishes com.billionsend:billionsend-java at the version pom.xml declares to
+# Maven Central (Sonatype Central Portal), signed with the project's GPG key.
+# Run it by hand (Actions → release → Run workflow) on a version tag; see
+# "Releasing" in the README for the accounts and secrets it needs.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Only a tag that names the project's version publishes, so the number on
+      # Maven Central is always a commit you can find.
+      - name: Run from the tag of the project version
+        run: |
+          test "$GITHUB_REF_TYPE" = tag
+          version="$(python3 -c 'import xml.etree.ElementTree as E; print(E.parse("pom.xml").getroot().find("{http://maven.apache.org/POM/4.0.0}version").text)')"
+          test "v$version" = "$GITHUB_REF_NAME"
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+          # Writes a settings.xml server "central" that reads these variables.
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+      - run: python3 scripts/generate.py --check
+      # verify (tests, jar, sources, javadoc), then sign and upload; waits until
+      # Central reports the version published.
+      - run: mvn -B -P release deploy
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
