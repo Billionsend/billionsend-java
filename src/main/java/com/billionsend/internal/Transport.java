@@ -99,7 +99,7 @@ public final class Transport {
    * @throws BillionSendException when the call fails
    */
   public JsonNode execute(Call call, RequestOptions options) {
-    return (JsonNode) run(call, options, Map.of(), false);
+    return (JsonNode) run(call, options, Map.of(), false, false);
   }
 
   /**
@@ -115,11 +115,21 @@ public final class Transport {
     EventStreamOptions o = options == null ? EventStreamOptions.none() : options;
     StreamConnection first = openStream(call, o, o.lastEventId(), o.maxRetries());
     return new EventStream(
-        first, lastEventId -> openStream(call, o, lastEventId, 0), o, endsOn, sleeper::sleep);
+        first, lastEventId -> reopenStream(call, o, lastEventId), o, endsOn, sleeper::sleep);
+  }
+
+  /** One reconnect, without retries: a failure carries the answer's retry-after for the stream. */
+  private StreamConnection reopenStream(Call call, EventStreamOptions o, String lastEventId) {
+    return openStream(call, o, lastEventId, 0, true);
   }
 
   private StreamConnection openStream(
       Call call, EventStreamOptions o, String lastEventId, Integer retries) {
+    return openStream(call, o, lastEventId, retries, false);
+  }
+
+  private StreamConnection openStream(
+      Call call, EventStreamOptions o, String lastEventId, Integer retries, boolean reconnect) {
     RequestOptions.Builder request = RequestOptions.builder().headers(o.headers());
     if (o.timeout() != null) {
       request.timeout(o.timeout());
@@ -131,11 +141,15 @@ public final class Transport {
     if (lastEventId != null) {
       extra.put("last-event-id", lastEventId);
     }
-    return (StreamConnection) run(call, request.build(), extra, true);
+    return (StreamConnection) run(call, request.build(), extra, true, reconnect);
   }
 
   private Object run(
-      Call call, RequestOptions requestOptions, Map<String, String> extraHeaders, boolean stream) {
+      Call call,
+      RequestOptions requestOptions,
+      Map<String, String> extraHeaders,
+      boolean stream,
+      boolean reconnect) {
     RequestOptions options = requestOptions == null ? RequestOptions.none() : requestOptions;
     if (call.auth && apiKey == null) {
       throw new AuthenticationException(
@@ -200,11 +214,11 @@ public final class Transport {
       }
       BillionSendException error = failure.error;
       if (!retryable || attempt >= retries || !Retry.retryable(error, keyed)) {
-        throw error;
+        throw reconnect ? new StreamOpenFailure(error, failure.retryAfter) : error;
       }
       Long delay = Retry.delayMillis(attempt, failure.retryAfter);
       if (delay == null) {
-        throw error;
+        throw reconnect ? new StreamOpenFailure(error, failure.retryAfter) : error;
       }
       try {
         sleeper.sleep(delay);

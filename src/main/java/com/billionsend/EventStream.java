@@ -4,6 +4,7 @@ import com.billionsend.internal.Retry;
 import com.billionsend.internal.ServerSentEvent;
 import com.billionsend.internal.SseParser;
 import com.billionsend.internal.StreamConnection;
+import com.billionsend.internal.StreamOpenFailure;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayDeque;
@@ -28,9 +29,12 @@ import java.util.Set;
  * <p>When the connection drops (the server also closes every stream about every ten minutes) it
  * reconnects with {@code Last-Event-ID}, and the events in between are replayed first, unless
  * {@link EventStreamOptions.Builder#reconnect(boolean) reconnect} is off. A connection that
- * opened is no failure however it ends, so a quiet inbox's stream goes on for ever; after {@link
- * EventStreamOptions#maxReconnects()} reconnects in a row that fail to open, the iteration throws
- * an {@link ApiConnectionException}; an error a retry cannot fix (a revoked key, say) is thrown as its own
+ * opened is no failure however it ends, so a quiet inbox's stream goes on for ever. A reconnect
+ * the API refuses with a {@code retry-after} (a 429 or a 5xx) waits that long, and one longer
+ * than a minute is thrown at once. After {@link EventStreamOptions#maxReconnects()} reconnects in
+ * a row that fail to open, the iteration throws the last refusal ({@link RateLimitException},
+ * {@link ApiException}, ...), or an {@link ApiConnectionException} when the API could not be
+ * reached at all; an error a retry cannot fix (a revoked key, say) is thrown as its own
  * {@link BillionSendException} class. One inbox's stream ends after that inbox's {@code
  * inbox.deleted} or {@code inbox.expired}.
  */
@@ -46,7 +50,7 @@ public final class EventStream implements Iterable<InboxStreamItem>, AutoCloseab
      *
      * @param lastEventId the position to resume after, or {@code null}
      * @return the open connection
-     * @throws BillionSendException when the stream cannot open
+     * @throws StreamOpenFailure when the stream cannot open, with the answer's retry-after
      */
     StreamConnection connect(String lastEventId);
   }
@@ -71,6 +75,8 @@ public final class EventStream implements Iterable<InboxStreamItem>, AutoCloseab
   private volatile boolean closed;
   private volatile String lastEventId;
   private volatile long delayMillis;
+  /** A failed reconnect's retry-after: the wait before the next attempt, once. */
+  private volatile Long retryAfterMillis;
   private boolean started;
 
   /**
@@ -214,8 +220,10 @@ public final class EventStream implements Iterable<InboxStreamItem>, AutoCloseab
         }
         // A connection that opened and then ended is not a failure: the server closes
         // a quiet stream on schedule. Only reconnects that fail to open count, in a row.
+        Long wait = retryAfterMillis;
+        retryAfterMillis = null;
         try {
-          sleeper.sleep(delayMillis);
+          sleeper.sleep(wait != null ? wait : delayMillis);
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           return null;
@@ -226,16 +234,31 @@ public final class EventStream implements Iterable<InboxStreamItem>, AutoCloseab
         StreamConnection opened;
         try {
           opened = connector.connect(lastEventId);
-        } catch (BillionSendException e) {
+        } catch (StreamOpenFailure failure) {
+          BillionSendException e = failure.error();
           if (!Retry.retryable(e, false)) {
             throw e;
           }
+          // A 429 or 5xx with a retry-after sets the next wait; one past the limit is
+          // thrown at once, as for any request.
+          Double seconds = Retry.parseRetryAfter(failure.retryAfter(), System.currentTimeMillis());
+          if (seconds != null) {
+            double ms = seconds * 1000;
+            if (ms > Retry.MAX_RETRY_AFTER_MS) {
+              throw e;
+            }
+            retryAfterMillis = (long) Math.ceil(ms);
+          }
           failures++;
           if (failures > options.maxReconnects()) {
-            throw new ApiConnectionException(
-                "The event stream could not reconnect; gave up after "
-                    + options.maxReconnects()
-                    + " reconnects");
+            // The API's own answer says why; without one the stream could not connect.
+            if (e instanceof ApiConnectionException) {
+              throw new ApiConnectionException(
+                  "The event stream could not reconnect; gave up after "
+                      + options.maxReconnects()
+                      + " reconnects");
+            }
+            throw e;
           }
           continue;
         }

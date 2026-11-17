@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 (2026-11-17)
+
+- An event stream's reconnect that the API refuses with a `Retry-After` (a 429 or a 5xx) waits that long before the next attempt, and one longer than a minute is thrown at once. When the reconnects run out, the last refusal is thrown as itself (`RateLimitException`, `ApiException`, ...); `ApiConnectionException` ("gave up after N reconnects") is left for a stream that could not reach the API at all.
+
 ## 0.1.1 (2026-11-17)
 
 - An event stream no longer gives up on a quiet inbox. The server closes every stream about every ten minutes; each such close counted as a failure, so a stream with no events for about an hour threw `gave up after 5 reconnects`. Only reconnects that fail to open count now, in a row, and one that opens resets the count.

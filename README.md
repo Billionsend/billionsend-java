@@ -18,14 +18,14 @@ Maven:
 <dependency>
   <groupId>com.billionsend</groupId>
   <artifactId>billionsend-java</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 
 Gradle:
 
 ```kotlin
-implementation("com.billionsend:billionsend-java:0.1.1")
+implementation("com.billionsend:billionsend-java:0.1.2")
 ```
 
 ## Quick start

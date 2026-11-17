@@ -197,9 +197,10 @@ class EventStreamTest extends MockTestBase {
                       .reconnectDelay(Duration.ofSeconds(5))
                       .maxReconnects(1)
                       .build());
-      ApiConnectionException error =
+      // The reconnects are refused: the last refusal is what is thrown.
+      ApiException error =
           assertThrows(
-              ApiConnectionException.class,
+              ApiException.class,
               () -> {
                 try (stream) {
                   for (InboxStreamItem item : stream) {
@@ -207,7 +208,7 @@ class EventStreamTest extends MockTestBase {
                   }
                 }
               });
-      assertTrue(error.getMessage().contains("gave up after 1 reconnects"), error.getMessage());
+      assertEquals(503, error.getStatusCode());
       assertEquals(List.of(41, 42), data);
       List<ContractMock.Hit> hits = mock.hitsFor("GET /inboxes/{inbox_id}/events");
       assertEquals(List.of("40", "41", "42", "42"), hits.stream().map(h -> h.header("last-event-id")).collect(Collectors.toList()));
@@ -252,15 +253,74 @@ class EventStreamTest extends MockTestBase {
     }
 
     @Test
-    void givesUpAfterMaxReconnectsThatFailToOpenInARow() {
+    void waitsTheRetryAfterOfARefusedReconnectAndThrowsTheLastRefusalWhenTheyRunOut() {
       mock.stream(
           "GET /inboxes/events",
           w -> {
             w.write(": keep-alive\n\n");
             w.end();
           });
+      mock.reply(
+          "GET /inboxes/events", 429, ContractMock.error(429, "rate_limit_exceeded", "Slow down"), Map.of("Retry-After", "2"));
+      mock.reply(
+          "GET /inboxes/events", 503, ContractMock.error(503, "unavailable", "Busy"), Map.of("Retry-After", "3"));
+      mock.reply(
+          "GET /inboxes/events", 429, ContractMock.error(429, "rate_limit_exceeded", "Slow down"), Map.of("Retry-After", "1"));
+      RateLimitException error =
+          assertThrows(
+              RateLimitException.class,
+              () -> {
+                try (EventStream stream =
+                    client()
+                        .inboxes()
+                        .events()
+                        .stream(
+                            null,
+                            EventStreamOptions.builder()
+                                .maxReconnects(2)
+                                .reconnectDelay(Duration.ofMillis(5))
+                                .build())) {
+                  stream.forEach(item -> {});
+                }
+              });
+      assertEquals("rate_limit_exceeded", error.getName());
+      // The first reconnect waits the stream's delay, then each retry-after in turn.
+      assertEquals(List.of(5L, 2000L, 3000L), sleeps);
+      assertEquals(4, mock.hitsFor("GET /inboxes/events").size());
+    }
+
+    @Test
+    void throwsARefusalWhoseRetryAfterIsOverAMinuteAtOnce() {
+      mock.stream(
+          "GET /inboxes/events",
+          w -> {
+            w.write(": keep-alive\n\n");
+            w.end();
+          });
+      mock.reply(
+          "GET /inboxes/events", 429, ContractMock.error(429, "rate_limit_exceeded", "Slow down"), Map.of("Retry-After", "120"));
+      assertThrows(
+          RateLimitException.class,
+          () -> {
+            try (EventStream stream = client().inboxes().events().stream()) {
+              stream.forEach(item -> {});
+            }
+          });
+      assertEquals(2, mock.hitsFor("GET /inboxes/events").size());
+    }
+
+    @Test
+    void givesUpAfterMaxReconnectsThatCannotConnect() {
+      mock.stream(
+          "GET /inboxes/events",
+          w -> {
+            w.write(": keep-alive\n\n");
+            w.end();
+          });
+      // Each reconnect times out before it opens (the HTTP client resends a dropped GET by
+      // itself, so a slow answer is what fails every attempt the same way).
       for (int i = 0; i < 3; i++) {
-        mock.reply("GET /inboxes/events", 503, ContractMock.error(503, "unavailable", "Busy"));
+        mock.replyAfter("GET /inboxes/events", 3_000);
       }
       ApiConnectionException error =
           assertThrows(
@@ -270,7 +330,12 @@ class EventStreamTest extends MockTestBase {
                     client()
                         .inboxes()
                         .events()
-                        .stream(null, EventStreamOptions.builder().maxReconnects(2).build())) {
+                        .stream(
+                            null,
+                            EventStreamOptions.builder()
+                                .maxReconnects(2)
+                                .timeout(Duration.ofMillis(300))
+                                .build())) {
                   stream.forEach(item -> {});
                 }
               });
