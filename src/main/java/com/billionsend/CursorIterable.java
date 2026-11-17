@@ -92,7 +92,9 @@ public final class CursorIterable implements Iterable<JsonNode> {
         JsonNode edge = backward ? data.get(0) : data.get(data.size() - 1);
         JsonNode id = edge == null ? null : edge.get("id");
         last = true;
-        if (id == null || id.isNull() || id.isContainerNode() || id.asText().isEmpty()) {
+        // Only a non-empty string continues the walk: an empty, numeric or structured id would
+        // page from the wrong place.
+        if (id == null || !id.isTextual() || id.asText().isEmpty()) {
           // Hand out this page first, then fail where the walk cannot go on.
           pending =
               new BillionSendException(

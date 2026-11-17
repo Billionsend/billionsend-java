@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class PaginationTest extends MockTestBase {
   static List<String> ids(Iterable<JsonNode> items) {
@@ -174,5 +176,21 @@ class PaginationTest extends MockTestBase {
             () -> client().domains().listAll(Map.of("before", "y")).forEach(back::add));
     assertEquals(2, back.size());
     assertEquals("The first item of the list page has no id to continue from", first.getMessage());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"{\"id\":\"\"}", "{\"id\":null}", "{\"id\":7}", "{\"id\":{}}", "{\"id\":[]}"})
+  void throwsWhenTheIdToContinueFromIsNotANonEmptyString(String item) throws Exception {
+    ObjectNode page = ContractMock.page(List.of("a"), true);
+    ((ArrayNode) page.get("data")).add(new com.fasterxml.jackson.databind.ObjectMapper().readTree(item));
+    mock.reply("GET /domains", 200, page);
+    List<JsonNode> seen = new ArrayList<>();
+    BillionSendException error =
+        assertThrows(
+            BillionSendException.class,
+            () -> client().domains().listAll().forEach(seen::add));
+    assertEquals(2, seen.size());
+    assertEquals("application_error", error.getName());
+    assertEquals(1, mock.hitsFor("GET /domains").size());
   }
 }
