@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.billionsend.contract.ContractMock;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -124,5 +126,53 @@ class PaginationTest extends MockTestBase {
     mock.reply("GET /webhooks", 200, ContractMock.page(List.of(), true));
     assertEquals(List.of(), ids(client().webhooks().listAll()));
     assertEquals(1, mock.hitsFor("GET /webhooks").size());
+  }
+  @Test
+  void throwsOnAPageWithoutADataArray() {
+    List<Object> answers = List.of(Map.of("object", "list"), Map.of("data", Map.of()), List.of());
+    for (Object answer : answers) {
+      mock.reply("GET /domains", 200, answer);
+      BillionSendException error =
+          assertThrows(BillionSendException.class, () -> ids(client().domains().listAll()), answer.toString());
+      assertEquals(BillionSendException.class, error.getClass());
+      assertEquals("application_error", error.getName());
+      assertNull(error.getStatusCode());
+      assertEquals("The list page has no data array", error.getMessage());
+    }
+    assertEquals(3, mock.hitsFor("GET /domains").size());
+  }
+
+  @Test
+  void handsOutThePageThenThrowsWhenTheItemToContinueFromHasNoId() {
+    ObjectNode page = ContractMock.page(List.of("a"), true);
+    ((ArrayNode) page.get("data")).addObject().put("name", "no id");
+    mock.reply("GET /domains", 200, page);
+    List<JsonNode> seen = new ArrayList<>();
+    BillionSendException error =
+        assertThrows(
+            BillionSendException.class,
+            () -> {
+              for (JsonNode domain : client().domains().listAll()) {
+                seen.add(domain);
+              }
+            });
+    assertEquals(2, seen.size());
+    assertEquals("a", seen.get(0).get("id").asText());
+    assertEquals("application_error", error.getName());
+    assertNull(error.getStatusCode());
+    assertEquals("The last item of the list page has no id to continue from", error.getMessage());
+    assertEquals(1, mock.hitsFor("GET /domains").size());
+
+    // Walking backward continues from the first item.
+    ObjectNode backward = ContractMock.page(List.of("z"), true);
+    ((ArrayNode) backward.get("data")).insertObject(0).put("name", "no id");
+    mock.reply("GET /domains", 200, backward);
+    List<JsonNode> back = new ArrayList<>();
+    BillionSendException first =
+        assertThrows(
+            BillionSendException.class,
+            () -> client().domains().listAll(Map.of("before", "y")).forEach(back::add));
+    assertEquals(2, back.size());
+    assertEquals("The first item of the list page has no id to continue from", first.getMessage());
   }
 }

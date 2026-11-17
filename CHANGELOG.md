@@ -7,7 +7,7 @@
 - Errors as unchecked exceptions: `ValidationException`, `AuthenticationException`, `PermissionDeniedException`, `NotFoundException`, `ConflictException`, `RateLimitException` (with `getRetryAfter()`), `ApiException`, `ApiConnectionException` and `ApiTimeoutException`, all `BillionSendException`s with `getStatusCode()`, `getName()`, `getMessage()` and `getRequestId()` (the answer's `x-request-id`).
 - The sending operations always carry an `Idempotency-Key`: the caller's, or a new one per call that its retries reuse.
 - Retries for 429, 5xx, timeouts, network failures and `409 concurrent_idempotent_requests`, on requests safe to repeat; `retry-after` honoured, exponential backoff otherwise; per-attempt timeouts; per-call `RequestOptions`.
-- `listAll` / `searchAll` iterables over cursor-paginated lists, also as a `Stream`.
+- `listAll` / `searchAll` iterables over cursor-paginated lists, also as a `Stream`; a page with no `data` array, or with more pages but no `id` to continue from, throws `application_error` instead of ending quietly.
 - Inbox event streams (server-sent events) as closeable iterables of typed events (`InboxStreamEvent`, `StreamGapEvent`), resuming with `Last-Event-ID` after a dropped connection; `stream.gap` handed out once per position; one inbox's stream ends after its `inbox.deleted` or `inbox.expired`.
 - `WebhookVerifier.verify` checks a webhook delivery's signature and timestamp and returns the parsed event.
 - Java 17 or later; `java.net.http.HttpClient`; one runtime dependency, `jackson-databind`.

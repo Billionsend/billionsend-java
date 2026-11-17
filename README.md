@@ -156,7 +156,7 @@ List<String> domainIds =
     client.domains().listAll().stream().map(d -> d.get("id").asText()).collect(Collectors.toList());
 ```
 
-Starting with `before` walks backward. A failed page is thrown as its exception. `new CursorIterable(fetchPage, query)` builds the same iterable over any page fetcher.
+Starting with `before` walks backward. A failed page is thrown as its exception; an answer that is not a list page (no `data` array, or more pages but no `id` on the item to continue from, after that page's items) throws a `BillionSendException` named `application_error`. `new CursorIterable(fetchPage, query)` builds the same iterable over any page fetcher.
 
 ## Errors
 

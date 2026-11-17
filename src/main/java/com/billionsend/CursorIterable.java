@@ -18,7 +18,9 @@ import java.util.stream.StreamSupport;
  * Every item of a cursor-paginated list, one at a time, fetching pages as the loop asks for them.
  * Starting with {@code before} set walks backward (using the first id of each page); otherwise it
  * walks forward from {@code after} (using the last id). A failed page is thrown as its {@link
- * BillionSendException}. Each call of {@link #iterator()} starts again from the first page.
+ * BillionSendException}; so is a page that is not a list ({@code application_error}: no {@code
+ * data} array, or more pages but no id on the item to continue from, thrown after that page's
+ * items). Each call of {@link #iterator()} starts again from the first page.
  *
  * <pre>{@code
  * for (JsonNode contact : client.contacts().listAll(Map.of("limit", 100))) {
@@ -59,6 +61,7 @@ public final class CursorIterable implements Iterable<JsonNode> {
     private final Deque<JsonNode> items = new ArrayDeque<>();
     private Map<String, Object> cursor = new LinkedHashMap<>();
     private boolean last;
+    private BillionSendException pending;
 
     Pages() {
       if (backward) {
@@ -74,7 +77,11 @@ public final class CursorIterable implements Iterable<JsonNode> {
         Map<String, Object> query = new LinkedHashMap<>(start);
         query.putAll(cursor);
         JsonNode page = fetchPage.apply(query);
-        JsonNode data = page.path("data");
+        JsonNode data = page == null || !page.isObject() ? null : page.get("data");
+        if (data == null || !data.isArray()) {
+          last = true;
+          throw new BillionSendException("The list page has no data array");
+        }
         for (JsonNode item : data) {
           items.add(item);
         }
@@ -83,13 +90,25 @@ public final class CursorIterable implements Iterable<JsonNode> {
           break;
         }
         JsonNode edge = backward ? data.get(0) : data.get(data.size() - 1);
-        JsonNode id = edge.get("id");
-        if (id == null || id.isNull()) {
-          last = true;
+        JsonNode id = edge == null ? null : edge.get("id");
+        last = true;
+        if (id == null || id.isNull() || id.isContainerNode() || id.asText().isEmpty()) {
+          // Hand out this page first, then fail where the walk cannot go on.
+          pending =
+              new BillionSendException(
+                  "The "
+                      + (backward ? "first" : "last")
+                      + " item of the list page has no id to continue from");
           break;
         }
+        last = false;
         cursor = new LinkedHashMap<>();
         cursor.put(backward ? "before" : "after", id.asText());
+      }
+      if (items.isEmpty() && pending != null) {
+        BillionSendException error = pending;
+        pending = null;
+        throw error;
       }
       return !items.isEmpty();
     }
