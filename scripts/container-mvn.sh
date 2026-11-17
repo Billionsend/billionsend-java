@@ -18,7 +18,14 @@ if [ "$#" -eq 0 ]; then
   set -- -B verify
 fi
 
-exec "$ENGINE" run --rm \
+# A build is heavy: it runs in a CPU- and memory-capped scope at low priority
+# where systemd's user manager is there, and at low priority anywhere else.
+LIMIT=(nice -n 10)
+if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  LIMIT=(systemd-run --user --scope --quiet -p CPUQuota=800% -p MemoryMax=16G nice -n 10)
+fi
+
+exec "${LIMIT[@]}" "$ENGINE" run --rm \
   -v "$ROOT:/work" \
   -v "$CACHE:/m2" \
   -w /work \
