@@ -27,9 +27,10 @@ import java.util.Set;
  *
  * <p>When the connection drops (the server also closes every stream about every ten minutes) it
  * reconnects with {@code Last-Event-ID}, and the events in between are replayed first, unless
- * {@link EventStreamOptions.Builder#reconnect(boolean) reconnect} is off. After {@link
- * EventStreamOptions#maxReconnects()} failures in a row the iteration throws an {@link
- * ApiConnectionException}; an error a retry cannot fix (a revoked key, say) is thrown as its own
+ * {@link EventStreamOptions.Builder#reconnect(boolean) reconnect} is off. A connection that
+ * opened is no failure however it ends, so a quiet inbox's stream goes on for ever; after {@link
+ * EventStreamOptions#maxReconnects()} reconnects in a row that fail to open, the iteration throws
+ * an {@link ApiConnectionException}; an error a retry cannot fix (a revoked key, say) is thrown as its own
  * {@link BillionSendException} class. One inbox's stream ends after that inbox's {@code
  * inbox.deleted} or {@code inbox.expired}.
  */
@@ -211,13 +212,8 @@ public final class EventStream implements Iterable<InboxStreamItem>, AutoCloseab
         if (closed || !reconnect) {
           return null;
         }
-        failures++;
-        if (failures > options.maxReconnects()) {
-          throw new ApiConnectionException(
-              "The event stream disconnected; gave up after "
-                  + options.maxReconnects()
-                  + " reconnects");
-        }
+        // A connection that opened and then ended is not a failure: the server closes
+        // a quiet stream on schedule. Only reconnects that fail to open count, in a row.
         try {
           sleeper.sleep(delayMillis);
         } catch (InterruptedException e) {
@@ -234,8 +230,16 @@ public final class EventStream implements Iterable<InboxStreamItem>, AutoCloseab
           if (!Retry.retryable(e, false)) {
             throw e;
           }
+          failures++;
+          if (failures > options.maxReconnects()) {
+            throw new ApiConnectionException(
+                "The event stream could not reconnect; gave up after "
+                    + options.maxReconnects()
+                    + " reconnects");
+          }
           continue;
         }
+        failures = 0;
         if (closed) {
           opened.close();
           return null;

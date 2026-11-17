@@ -29,7 +29,7 @@ import java.util.function.Function;
  */
 public final class BillionSend extends BillionSendApi {
   /** This SDK's version. */
-  public static final String VERSION = "0.1.0";
+  public static final String VERSION = "0.1.1";
 
   /** The API base URL used when none is configured. */
   public static final String DEFAULT_BASE_URL = "https://api.billionsend.com";

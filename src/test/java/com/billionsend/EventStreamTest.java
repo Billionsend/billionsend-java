@@ -183,6 +183,7 @@ class EventStreamTest extends MockTestBase {
             w.end();
           });
       mock.reply("GET /inboxes/{inbox_id}/events", 503, ContractMock.error(503, "unavailable", "Busy"));
+      mock.reply("GET /inboxes/{inbox_id}/events", 503, ContractMock.error(503, "unavailable", "Busy"));
       List<Integer> data = new ArrayList<>();
       EventStream stream =
           client()
@@ -209,10 +210,72 @@ class EventStreamTest extends MockTestBase {
       assertTrue(error.getMessage().contains("gave up after 1 reconnects"), error.getMessage());
       assertEquals(List.of(41, 42), data);
       List<ContractMock.Hit> hits = mock.hitsFor("GET /inboxes/{inbox_id}/events");
-      assertEquals(List.of("40", "41", "42"), hits.stream().map(h -> h.header("last-event-id")).collect(Collectors.toList()));
+      assertEquals(List.of("40", "41", "42", "42"), hits.stream().map(h -> h.header("last-event-id")).collect(Collectors.toList()));
       assertTrue(hits.stream().allMatch(h -> "inbox.email.received".equals(h.query("types"))));
       assertTrue(hits.stream().allMatch(h -> h.rawPath.equals("/inboxes/support%40example.com/events")));
-      assertEquals(List.of(10L, 10L), sleeps, "the server's retry field sets the wait");
+      assertEquals(List.of(10L, 10L, 10L), sleeps, "the server's retry field sets the wait");
+    }
+
+    @Test
+    void keepsAQuietStreamGoingThroughEveryScheduledCloseAndCountsOnlyFailedOpens() {
+      // The server closes a quiet stream about every ten minutes: eight in a row, each opened
+      // and ended with nothing but keep-alives, are no failure with maxReconnects(2).
+      for (int i = 0; i < 8; i++) {
+        mock.stream(
+            "GET /inboxes/events",
+            w -> {
+              w.write(": keep-alive\n\n");
+              w.end();
+            });
+      }
+      // A failed open between two that open does not add up either.
+      mock.reply("GET /inboxes/events", 503, ContractMock.error(503, "unavailable", "Busy"));
+      mock.stream(
+          "GET /inboxes/events",
+          w -> {
+            w.write("id: 7\ndata: {\"n\":7}\n\n");
+            w.end();
+          });
+      List<Integer> data = new ArrayList<>();
+      try (EventStream stream =
+          client()
+              .inboxes()
+              .events()
+              .stream(null, EventStreamOptions.builder().maxReconnects(2).build())) {
+        for (InboxStreamItem item : stream) {
+          data.add(item.data().get("n").asInt());
+          break;
+        }
+      }
+      assertEquals(List.of(7), data);
+      assertEquals(10, mock.hitsFor("GET /inboxes/events").size());
+    }
+
+    @Test
+    void givesUpAfterMaxReconnectsThatFailToOpenInARow() {
+      mock.stream(
+          "GET /inboxes/events",
+          w -> {
+            w.write(": keep-alive\n\n");
+            w.end();
+          });
+      for (int i = 0; i < 3; i++) {
+        mock.reply("GET /inboxes/events", 503, ContractMock.error(503, "unavailable", "Busy"));
+      }
+      ApiConnectionException error =
+          assertThrows(
+              ApiConnectionException.class,
+              () -> {
+                try (EventStream stream =
+                    client()
+                        .inboxes()
+                        .events()
+                        .stream(null, EventStreamOptions.builder().maxReconnects(2).build())) {
+                  stream.forEach(item -> {});
+                }
+              });
+      assertTrue(error.getMessage().contains("gave up after 2 reconnects"), error.getMessage());
+      assertEquals(4, mock.hitsFor("GET /inboxes/events").size());
     }
 
     @Test

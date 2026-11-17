@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 (2026-11-17)
+
+- An event stream no longer gives up on a quiet inbox. The server closes every stream about every ten minutes; each such close counted as a failure, so a stream with no events for about an hour threw `gave up after 5 reconnects`. Only reconnects that fail to open count now, in a row, and one that opens resets the count.
+- README: the Spring webhook example takes the headers as `@RequestHeader Map<String, String>`, which every framework version binds.
+
 ## 0.1.0 (2026-11-17)
 
 - First version of the BillionSend SDK for Java: every operation of the BillionSend API (139 in this version), grouped by resource and named after each operation's `operationId` (`client.emails().receiving().attachments().list(...)`), generated from the OpenAPI document. `emails.metrics`, which is also the group of `emails.metrics.links` / `countries` / `clients`, is `client.emails().metrics().get(...)`.

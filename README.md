@@ -18,14 +18,14 @@ Maven:
 <dependency>
   <groupId>com.billionsend</groupId>
   <artifactId>billionsend-java</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 
 Gradle:
 
 ```kotlin
-implementation("com.billionsend:billionsend-java:0.1.0")
+implementation("com.billionsend:billionsend-java:0.1.1")
 ```
 
 ## Quick start
@@ -218,7 +218,7 @@ int handle(byte[] rawBody, Map<String, List<String>> headers) {
 }
 ```
 
-In Spring, `@RequestBody byte[] body` and `@RequestHeader HttpHeaders headers` fit as they are. During a secret rotation a delivery carries a signature for each live secret, and either secret verifies it.
+In Spring, `@RequestBody byte[] body` and `@RequestHeader Map<String, String> headers` (every header, the first value of each) fit as they are, whatever the framework version. During a secret rotation a delivery carries a signature for each live secret, and either secret verifies it.
 
 ## Configuration
 

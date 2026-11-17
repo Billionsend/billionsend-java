@@ -56,7 +56,7 @@ public final class EventStreamOptions {
     return reconnect;
   }
 
-  /** Reconnect attempts in a row before giving up (default 5). */
+  /** Reconnects in a row that fail to open before giving up (default 5); one that opens resets the count. */
   public int maxReconnects() {
     return maxReconnects;
   }
